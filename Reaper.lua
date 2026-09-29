@@ -1,5 +1,8 @@
 local Reaper = {
+    Version = "1.0.0",
     Flags = {},
+    Options = {},
+    Config = {Enabled = false, Folder = "Reaper", File = "default"},
     Theme = {
         Background = Color3.fromRGB(6, 6, 6),
         Panel = Color3.fromRGB(12, 12, 12),
@@ -73,9 +76,16 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
+local TextService = game:GetService("TextService")
 local Player = Players.LocalPlayer
 
 local Flags = Reaper.Flags
+local Connections = {}
+local function bind(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(Connections, c)
+    return c
+end
 local Elements = {}
 local Tabs = {}
 local ActiveTab = nil
@@ -155,7 +165,7 @@ local function strokeGradient(s, speed)
     return gradient(s, Reaper.Theme.Accent, Reaper.Theme.Accent2, 0, "spin", speed, true)
 end
 
-RunService.RenderStepped:Connect(function()
+bind(RunService.RenderStepped, function()
     local t = os.clock()
     for i = #AnimGradients, 1, -1 do
         local a = AnimGradients[i]
@@ -185,7 +195,7 @@ local function makeDraggable(dragHandle, dragTarget, canDrag)
             end)
         end
     end)
-    UserInputService.InputChanged:Connect(function(input)
+    bind(UserInputService.InputChanged, function(input)
         if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             local delta = input.Position - dragStart
             if math.abs(delta.X) + math.abs(delta.Y) > 6 then moved = true end
@@ -199,124 +209,111 @@ local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "Reaper"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
+ScreenGui.Enabled = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 protect(ScreenGui)
 
--- ===== Config System =====
--- Поддерживает несколько JSON-конфигов в папке, например Reaper/default.json.
-Reaper.Config = {
-    Folder = "Reaper",
-    File = "default",
-    AutoSave = true,
-    AutoLoad = true,
-    LegacyFile = "reaper_config.json"
-}
+-- ===== Конфиги =====
+local Loaded = {}          -- значения, прочитанные с диска (для элементов, созданных позже)
+local saveQueued = false
 
-Reaper.Themes = {
-    White = {
-        Background = Color3.fromRGB(238, 240, 244),
-        Panel = Color3.fromRGB(255, 255, 255),
-        Element = Color3.fromRGB(247, 248, 250),
-        Stroke = Color3.fromRGB(205, 210, 220),
-        Text = Color3.fromRGB(25, 28, 34),
-        TextDark = Color3.fromRGB(92, 98, 110),
-        Accent = Color3.fromRGB(255, 255, 255),
-        Accent2 = Color3.fromRGB(150, 155, 165),
-        Enabled = Color3.fromRGB(235, 238, 245)
-    },
-    Black = {
-        Background = Color3.fromRGB(6, 6, 6),
-        Panel = Color3.fromRGB(12, 12, 12),
-        Element = Color3.fromRGB(20, 20, 20),
-        Stroke = Color3.fromRGB(52, 52, 52),
-        Text = Color3.fromRGB(245, 245, 245),
-        TextDark = Color3.fromRGB(115, 115, 115),
-        Accent = Color3.fromRGB(255, 255, 255),
-        Accent2 = Color3.fromRGB(90, 90, 90),
-        Enabled = Color3.fromRGB(255, 255, 255)
-    },
-    Green = {
-        Background = Color3.fromRGB(4, 12, 8),
-        Panel = Color3.fromRGB(7, 22, 14),
-        Element = Color3.fromRGB(11, 34, 21),
-        Stroke = Color3.fromRGB(30, 86, 53),
-        Text = Color3.fromRGB(235, 255, 241),
-        TextDark = Color3.fromRGB(130, 185, 148),
-        Accent = Color3.fromRGB(93, 255, 151),
-        Accent2 = Color3.fromRGB(19, 128, 69),
-        Enabled = Color3.fromRGB(83, 220, 132)
-    }
-}
-
-local function cleanConfigName(name)
-    name = tostring(name or Reaper.Config.File or "default")
-    name = name:gsub("[\\/:*?%\"<>|]", "_"):gsub("%.json$", "")
-    return name ~= "" and name or "default"
+local function cfgPath(name)
+    return Reaper.Config.Folder .. "/" .. (name or Reaper.Config.File) .. ".json"
 end
 
-local function configPath(name)
-    local folder = tostring(Reaper.Config.Folder or "Reaper"):gsub("[\\/:*?%\"<>|]", "_")
-    local file = cleanConfigName(name)
-    return folder .. "/" .. file .. ".json"
-end
-
-local function ensureConfigFolder()
-    if not makefolder then return true end
-    local folder = tostring(Reaper.Config.Folder or "Reaper")
-    if isfolder and isfolder(folder) then return true end
-    local ok = pcall(makefolder, folder)
-    return ok or (isfolder and isfolder(folder))
-end
-
-local function saveConfig(name, force)
-    if not writefile then return false, "writefile is unavailable" end
-    if not force and Reaper.Config.AutoSave == false then return false, "autosave is disabled" end
-    local path = configPath(name)
-    local ok, err = pcall(function()
-        assert(ensureConfigFolder(), "unable to create config folder")
-        writefile(path, HttpService:JSONEncode(Flags))
-    end)
-    if ok then
-        Reaper.Config.File = cleanConfigName(name)
-        return true
+local function encodeValue(v)
+    if typeof(v) == "Color3" then return {__t = "Color3", r = v.R, g = v.G, b = v.B} end
+    if type(v) == "table" then
+        local o = {}
+        for k, x in pairs(v) do o[k] = encodeValue(x) end
+        return o
     end
-    warn("[Reaper] Не удалось сохранить конфиг: " .. tostring(err))
-    return false, err
+    return v
 end
 
-local function loadConfig(name, force)
-    if not readfile or not isfile then return false, "readfile/isfile is unavailable" end
-    if not force and Reaper.Config.AutoLoad == false then return false, "autoload is disabled" end
-    local requested = cleanConfigName(name)
-    local path = configPath(requested)
-    local source = path
-    if not isfile(path) and requested == "default" and Reaper.Config.LegacyFile and isfile(Reaper.Config.LegacyFile) then
-        source = Reaper.Config.LegacyFile
+local function decodeValue(v)
+    if type(v) == "table" then
+        if v.__t == "Color3" then return Color3.new(v.r, v.g, v.b) end
+        local o = {}
+        for k, x in pairs(v) do o[k] = decodeValue(x) end
+        return o
     end
-    if not isfile(source) then return false, "config does not exist" end
+    return v
+end
+
+local function readConfigFile(name)
+    if not (readfile and isfile) then return nil end
     local ok, data = pcall(function()
-        return HttpService:JSONDecode(readfile(source))
+        local path = cfgPath(name)
+        if not isfile(path) then return nil end
+        return HttpService:JSONDecode(readfile(path))
     end)
-    if not ok or type(data) ~= "table" then
-        warn("[Reaper] Некорректный JSON в конфиге: " .. tostring(source))
-        return false, "invalid json"
+    if ok and type(data) == "table" then
+        local out = {}
+        for k, v in pairs(data) do out[k] = decodeValue(v) end
+        return out
     end
-    for key, value in pairs(data) do Flags[key] = value end
-    Reaper.Config.File = requested
+    return nil
+end
+
+local function resolveKey(k)
+    if typeof(k) == "EnumItem" then return k end
+    if type(k) == "string" then
+        local ok, kc = pcall(function() return Enum.KeyCode[k] end)
+        if ok then return kc end
+    end
+    return nil
+end
+
+function Reaper:SaveConfig(name)
+    if not writefile then return false end
+    local ok = pcall(function()
+        if makefolder and isfolder and not isfolder(Reaper.Config.Folder) then makefolder(Reaper.Config.Folder) end
+        local data = {}
+        for k, v in pairs(Reaper.Flags) do data[k] = encodeValue(v) end
+        writefile(cfgPath(name), HttpService:JSONEncode(data))
+    end)
+    return ok
+end
+
+function Reaper:LoadConfig(name)
+    local data = readConfigFile(name)
+    if not data then return false end
+    for flag, v in pairs(data) do
+        local el = Reaper.Options[flag]
+        if el then el:Set(v) else Loaded[flag] = v end
+    end
     return true
 end
 
-local function listConfigs()
-    if not listfiles then return {} end
-    local result = {}
-    local folder = tostring(Reaper.Config.Folder or "Reaper")
-    if isfolder and not isfolder(folder) then return result end
-    for _, path in ipairs(listfiles(folder)) do
-        local name = tostring(path):match("([^/\\]+)%.json$")
-        if name then table.insert(result, name) end
-    end
-    table.sort(result)
-    return result
+function Reaper:ListConfigs()
+    local out = {}
+    pcall(function()
+        if listfiles and isfolder and isfolder(Reaper.Config.Folder) then
+            for _, path in ipairs(listfiles(Reaper.Config.Folder)) do
+                local n = tostring(path):match("([^/\\]+)%.json$")
+                if n then table.insert(out, n) end
+            end
+        end
+    end)
+    return out
+end
+
+function Reaper:DeleteConfig(name)
+    local ok = pcall(function()
+        if delfile and isfile(cfgPath(name)) then delfile(cfgPath(name)) end
+    end)
+    return ok
+end
+
+-- автосохранение с задержкой, чтобы не писать файл на каждое движение слайдера
+local function queueSave()
+    if not Reaper.Config.Enabled or saveQueued then return end
+    saveQueued = true
+    task.delay(0.6, function()
+        saveQueued = false
+        if not Reaper.Destroyed then Reaper:SaveConfig() end
+    end)
 end
 
 function Reaper:Notify(data)
@@ -361,7 +358,8 @@ function Reaper:Notify(data)
     title.TextSize = 14
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.TextColor3 = Reaper.Theme.Text
-    title.Text = data.Title or "Reaper"
+    local typePrefix = ({success = "✓  ", warning = "⚠  ", error = "✕  "})[data.Type or ""] or ""
+    title.Text = typePrefix .. tostring(data.Title or "Reaper")
     title.TextTransparency = 1
     title.Parent = notif
     local content = Instance.new("TextLabel")
@@ -584,6 +582,7 @@ Container.Parent = Panel
 
 local containerList = Instance.new("UIListLayout")
 containerList.Padding = UDim.new(0, 6)
+containerList.SortOrder = Enum.SortOrder.LayoutOrder
 containerList.HorizontalAlignment = Enum.HorizontalAlignment.Center
 containerList.Parent = Container
 
@@ -661,7 +660,7 @@ do
             end)
         end
     end)
-    UserInputService.InputChanged:Connect(function(input)
+    bind(UserInputService.InputChanged, function(input)
         if panelDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             local d = input.Position - dragStart
             PanelPos = clampPanel(Vector2.new(dragOrigin.X + d.X, dragOrigin.Y + d.Y))
@@ -696,7 +695,7 @@ setPanelVisible = function(v)
     end
 end
 
-RunService.RenderStepped:Connect(function()
+bind(RunService.RenderStepped, function()
     if not panelDragging then PanelPos = clampPanel(PanelPos) end
     Panel.Position = UDim2.new(0, math.floor(PanelPos.X), 0, math.floor(PanelPos.Y + panelShift.Value))
     -- «дыхание» обводки центра и кнопки
@@ -1011,7 +1010,7 @@ SpinPad.InputBegan:Connect(function(input)
     beginSpin(input)
 end)
 
-UserInputService.InputChanged:Connect(function(input)
+bind(UserInputService.InputChanged, function(input)
     if not spin.grab then return end
     if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
     local c = menuCenter()
@@ -1029,7 +1028,7 @@ UserInputService.InputChanged:Connect(function(input)
     spin.vel = spin.vel * 0.6 + (d / dt) * 0.4
 end)
 
-RunService.RenderStepped:Connect(function(dt)
+bind(RunService.RenderStepped, function(dt)
     -- иконки всегда остаются ровными, пока колесо крутится
     for _, t in ipairs(Tabs) do
         if t.Button then t.Button.Rotation = -Ring.Rotation end
@@ -1080,7 +1079,7 @@ local function selectTab(tab)
         end
     end
     for _, el in ipairs(Elements) do
-        el.Frame.Visible = el.Tab == tab or (el.Tab and el.Tab._proxyTarget == tab)
+        el.Frame.Visible = (el.Tab == tab) and not el.Hidden
     end
     setMinimized(false)
     setPanelVisible(true)
@@ -1116,13 +1115,16 @@ local function createTabButton(tab, index, total)
     btn.Visible = false
     btn.ZIndex = 5
     btn.Parent = Ring
-    if Reaper.Icons[tab.Icon] then
+    local iconAsset = Reaper.Icons[tab.Icon]
+    if not iconAsset and type(tab.Icon) == "number" then iconAsset = "rbxassetid://" .. tab.Icon end
+    if not iconAsset and type(tab.Icon) == "string" and tab.Icon:find("^rbxassetid://") then iconAsset = tab.Icon end
+    if iconAsset then
         local img = Instance.new("ImageLabel")
         img.Name = "Icon"
         img.Size = UDim2.new(0, 34, 0, 34)
         img.Position = UDim2.new(0.5, -17, 0.5, -17)
         img.BackgroundTransparency = 1
-        img.Image = Reaper.Icons[tab.Icon]
+        img.Image = iconAsset
         img.ImageColor3 = Reaper.Theme.TextDark
         img.ZIndex = 6
         img.Parent = btn
@@ -1132,7 +1134,7 @@ local function createTabButton(tab, index, total)
         tl.Name = "Icon"
         tl.Size = UDim2.new(1, 0, 1, 0)
         tl.BackgroundTransparency = 1
-        tl.Text = tab.Icon
+        tl.Text = tostring(tab.Icon)
         tl.TextSize = 32
         tl.Font = Enum.Font.GothamBold
         tl.TextColor3 = Reaper.Theme.TextDark
@@ -1180,26 +1182,143 @@ local function createTabButton(tab, index, total)
     tab.TargetPos = target
 end
 
-local function newElement(tab, height)
+--=====================================================================
+--  ЭЛЕМЕНТЫ
+--  Tab:CreateButton / CreateToggle / CreateSlider / CreateDropdown / CreateInput /
+--      CreateKeybind / CreateColorPicker / CreateLabel / CreateParagraph /
+--      CreateSection / CreateDivider
+--  У всех элементов одинаковые методы:
+--      :Set(value, silent)  :Get()  :OnChanged(fn)  :SetName(text)
+--      :SetVisible(bool)    :Destroy()
+--=====================================================================
+local LABEL_W = 280
+local PARA_W = 272
+local layoutCounter = 0
+
+local function textHeight(text, size, font, width)
+    local ok, v = pcall(function()
+        return TextService:GetTextSize(text, size, font, Vector2.new(width, 10000))
+    end)
+    if ok then return v.Y end
+    return size + 4
+end
+
+local ElementBase = {}
+ElementBase.__index = ElementBase
+
+function ElementBase:Get()
+    return self.Value
+end
+
+function ElementBase:Bind(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(self.Conns, c)
+    return c
+end
+
+function ElementBase:SetVisible(v)
+    self.Hidden = not v
+    self.Frame.Visible = v and ActiveTab == self.Tab
+end
+
+function ElementBase:SetName(text)
+    self.Name = text
+    if self.NameLabel then self.NameLabel.Text = tostring(text) end
+end
+
+function ElementBase:OnChanged(fn)
+    table.insert(self.Listeners, fn)
+    return function()
+        local i = table.find(self.Listeners, fn)
+        if i then table.remove(self.Listeners, i) end
+    end
+end
+
+function ElementBase:Destroy()
+    if self.Destroyed then return end
+    self.Destroyed = true
+    for _, c in ipairs(self.Conns) do pcall(function() c:Disconnect() end) end
+    local i = table.find(Elements, self)
+    if i then table.remove(Elements, i) end
+    if self.Flag and Reaper.Options[self.Flag] == self then
+        Reaper.Options[self.Flag] = nil
+        Reaper.Flags[self.Flag] = nil
+    end
+    self.Frame:Destroy()
+end
+
+local function newElement(tab, height, elType, data, plain)
+    data = data or {}
+    layoutCounter = layoutCounter + 1
     local f = Instance.new("Frame")
+    f.Name = elType
     f.Size = UDim2.new(1, -24, 0, height)
     f.BackgroundColor3 = Reaper.Theme.Element
+    f.BackgroundTransparency = plain and 1 or 0
     f.BorderSizePixel = 0
-    f.Visible = false
+    f.LayoutOrder = layoutCounter
     f.ZIndex = 5
+    f.Visible = ActiveTab == tab
     f.Parent = Container
-    round(f, 8)
-    stroke(f, Reaper.Theme.Stroke, 0.5)
-    local el = {Tab = tab, Frame = f}
+    if not plain then
+        round(f, 8)
+        stroke(f, Reaper.Theme.Stroke, 0.5)
+    end
+    local el = setmetatable({
+        Type = elType, Tab = tab, Frame = f, Name = data.Name,
+        Conns = {}, Listeners = {}, Hidden = false, Destroyed = false
+    }, ElementBase)
     table.insert(Elements, el)
+    if tab.Elements then table.insert(tab.Elements, el) end
     return f, el
+end
+
+-- Значение из сохранённого конфига (если есть) или значение по умолчанию
+local function resolveInitial(flag, default)
+    if flag and Loaded[flag] ~= nil then
+        local v = Loaded[flag]
+        Loaded[flag] = nil
+        return v, true
+    end
+    return default, false
+end
+
+-- Записывает значение, сохраняет конфиг, вызывает Callback и OnChanged
+local function commit(el, data, v, silent)
+    el.Value = v
+    if el.Flag then
+        Reaper.Flags[el.Flag] = v
+        queueSave()
+    end
+    if not silent then
+        if data.Callback then safeCall(data.Callback, v) end
+        for _, fn in ipairs(el.Listeners) do safeCall(fn, v) end
+    end
+end
+
+-- Регистрирует Flag; если значение пришло из конфига - повторно вызывает Callback
+local function finish(el, data, wasLoaded)
+    if el.Flag then
+        if Reaper.Options[el.Flag] and Reaper.Options[el.Flag] ~= el then
+            warn("[Reaper] Flag «" .. el.Flag .. "» уже используется, старый элемент заменён")
+        end
+        Reaper.Options[el.Flag] = el
+    end
+    if wasLoaded then
+        task.defer(function()
+            if not el.Destroyed then commit(el, data, el.Value, false) end
+        end)
+    end
+    return el
 end
 
 local TabFuncs = {}
 
+---------------------------------------------------------------- Button
 function TabFuncs:CreateButton(data)
+    if type(data) == "string" then data = {Name = data} end
     data = data or {}
-    local f, el = newElement(self, 36)
+    local f, el = newElement(self, 36, "Button", data)
     gradient(f, Color3.fromRGB(24, 24, 24), Color3.fromRGB(16, 16, 16), 115)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(1, 0, 1, 0)
@@ -1210,25 +1329,33 @@ function TabFuncs:CreateButton(data)
     b.TextColor3 = Reaper.Theme.Text
     b.ZIndex = 6
     b.Parent = f
+    el.NameLabel = b
     b.MouseEnter:Connect(function() tween(f, {0.15}, {BackgroundColor3 = Color3.fromRGB(40, 40, 40)}) end)
     b.MouseLeave:Connect(function() tween(f, {0.15}, {BackgroundColor3 = Reaper.Theme.Element}) end)
-    b.MouseButton1Click:Connect(function()
+    local function fire()
         tween(f, {0.1}, {BackgroundColor3 = Reaper.Theme.Accent})
-        task.delay(0.1, function() tween(f, {0.15}, {BackgroundColor3 = Reaper.Theme.Element}) end)
+        task.delay(0.1, function()
+            if not el.Destroyed then tween(f, {0.15}, {BackgroundColor3 = Reaper.Theme.Element}) end
+        end)
         if data.Callback then safeCall(data.Callback) end
-    end)
-    el.Set = function(_, txt) b.Text = txt end
+        for _, fn in ipairs(el.Listeners) do safeCall(fn) end
+    end
+    b.MouseButton1Click:Connect(fire)
+    el.Fire = function() fire() end
+    el.Set = function(_, txt) el:SetName(txt) end
     return el
 end
 
+---------------------------------------------------------------- Label
 function TabFuncs:CreateLabel(data)
+    if type(data) == "string" then data = {Name = data} end
     data = data or {}
-    local f, el = newElement(self, 32)
+    local f, el = newElement(self, 32, "Label", data)
     local l = Instance.new("TextLabel")
     l.Size = UDim2.new(1, -16, 1, 0)
     l.Position = UDim2.new(0, 8, 0, 0)
     l.BackgroundTransparency = 1
-    l.Text = data.Name or ""
+    l.Text = tostring(data.Name or "")
     l.Font = Enum.Font.Gotham
     l.TextSize = 12
     l.TextXAlignment = Enum.TextXAlignment.Left
@@ -1236,17 +1363,109 @@ function TabFuncs:CreateLabel(data)
     l.TextWrapped = true
     l.ZIndex = 6
     l.Parent = f
-    el.Set = function(_, txt) l.Text = txt end
+    el.NameLabel = l
+    local function resize()
+        f.Size = UDim2.new(1, -24, 0, math.max(32, textHeight(l.Text, 12, Enum.Font.Gotham, LABEL_W) + 14))
+    end
+    resize()
+    el.Value = l.Text
+    el.Set = function(_, txt, color)
+        l.Text = tostring(txt)
+        if color then l.TextColor3 = color end
+        el.Value = l.Text
+        resize()
+    end
+    el.SetName = function(_, txt) el:Set(txt) end
     return el
 end
 
+---------------------------------------------------------------- Paragraph
+function TabFuncs:CreateParagraph(data)
+    data = data or {}
+    local f, el = newElement(self, 56, "Paragraph", data)
+    local t = Instance.new("TextLabel")
+    t.Size = UDim2.new(1, -24, 0, 20)
+    t.Position = UDim2.new(0, 12, 0, 6)
+    t.BackgroundTransparency = 1
+    t.Text = data.Title or ""
+    t.Font = Enum.Font.GothamBold
+    t.TextSize = 13
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.TextColor3 = Reaper.Theme.Accent
+    t.ZIndex = 6
+    t.Parent = f
+    el.NameLabel = t
+    local c = Instance.new("TextLabel")
+    c.Size = UDim2.new(1, -24, 1, -32)
+    c.Position = UDim2.new(0, 12, 0, 26)
+    c.BackgroundTransparency = 1
+    c.Text = data.Content or ""
+    c.Font = Enum.Font.Gotham
+    c.TextSize = 12
+    c.TextWrapped = true
+    c.TextXAlignment = Enum.TextXAlignment.Left
+    c.TextYAlignment = Enum.TextYAlignment.Top
+    c.TextColor3 = Reaper.Theme.TextDark
+    c.ZIndex = 6
+    c.Parent = f
+    local function resize()
+        f.Size = UDim2.new(1, -24, 0, 26 + textHeight(c.Text, 12, Enum.Font.Gotham, PARA_W) + 12)
+    end
+    resize()
+    el.Set = function(_, title, content)
+        if type(title) == "table" then title, content = title.Title, title.Content end
+        if title ~= nil then t.Text = tostring(title) end
+        if content ~= nil then c.Text = tostring(content) end
+        resize()
+    end
+    return el
+end
+
+---------------------------------------------------------------- Section / Divider
+function TabFuncs:CreateSection(data)
+    if type(data) == "string" then data = {Name = data} end
+    data = data or {}
+    local f, el = newElement(self, 26, "Section", data, true)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, -8, 0, 16)
+    l.Position = UDim2.new(0, 4, 0, 6)
+    l.BackgroundTransparency = 1
+    l.Text = string.upper(tostring(data.Name or ""))
+    l.Font = Enum.Font.GothamBold
+    l.TextSize = 11
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextColor3 = Reaper.Theme.TextDark
+    l.ZIndex = 6
+    l.Parent = f
+    el.SetName = function(_, txt)
+        el.Name = txt
+        l.Text = string.upper(tostring(txt))
+    end
+    el.Set = function(_, txt) el:SetName(txt) end
+    return el
+end
+
+function TabFuncs:CreateDivider()
+    local f, el = newElement(self, 8, "Divider", nil, true)
+    local line = Instance.new("Frame")
+    line.Size = UDim2.new(1, -8, 0, 1)
+    line.Position = UDim2.new(0, 4, 0.5, 0)
+    line.BackgroundColor3 = Reaper.Theme.Stroke
+    line.BorderSizePixel = 0
+    line.ZIndex = 6
+    line.Parent = f
+    return el
+end
+
+---------------------------------------------------------------- Toggle
 function TabFuncs:CreateToggle(data)
     data = data or {}
-    local flag = data.Flag or data.Name or HttpService:GenerateGUID(false)
-    local state = data.CurrentValue or Flags[flag] or false
-    local f, el = newElement(self, 36)
+    local f, el = newElement(self, 36, "Toggle", data)
+    el.Flag = data.Flag
+    local start, loaded = resolveInitial(data.Flag, data.CurrentValue or false)
+    start = start and true or false
     local l = Instance.new("TextLabel")
-    l.Size = UDim2.new(1, -52, 1, 0)
+    l.Size = UDim2.new(1, -60, 1, 0)
     l.Position = UDim2.new(0, 12, 0, 0)
     l.BackgroundTransparency = 1
     l.Text = data.Name or "Toggle"
@@ -1256,6 +1475,7 @@ function TabFuncs:CreateToggle(data)
     l.TextColor3 = Reaper.Theme.Text
     l.ZIndex = 6
     l.Parent = f
+    el.NameLabel = l
     local switch = Instance.new("Frame")
     switch.Size = UDim2.new(0, 36, 0, 20)
     switch.Position = UDim2.new(1, -46, 0.5, -10)
@@ -1273,35 +1493,54 @@ function TabFuncs:CreateToggle(data)
     knob.ZIndex = 7
     knob.Parent = switch
     round(knob, 8)
-    local function apply(v, fire)
-        state = v
-        Flags[flag] = v
-        saveConfig()
-        tween(knob, {0.2, Enum.EasingStyle.Quint}, {Position = v and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)})
-        tween(switch, {0.2}, {BackgroundColor3 = v and Reaper.Theme.Enabled or Reaper.Theme.Stroke})
+    local function render(v, animate)
+        local kp = v and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+        local sc = v and Reaper.Theme.Enabled or Reaper.Theme.Stroke
+        if animate then
+            tween(knob, {0.2, Enum.EasingStyle.Quint}, {Position = kp})
+            tween(switch, {0.2}, {BackgroundColor3 = sc})
+        else
+            knob.Position = kp
+            switch.BackgroundColor3 = sc
+        end
         switchGrad.Enabled = v
-        if fire and data.Callback then safeCall(data.Callback, v) end
     end
+    el.Set = function(_, v, silent)
+        v = v and true or false
+        render(v, true)
+        commit(el, data, v, silent)
+    end
+    el.Toggle = function() el:Set(not el.Value) end
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, 0, 1, 0)
     btn.BackgroundTransparency = 1
     btn.Text = ""
     btn.ZIndex = 8
     btn.Parent = f
-    btn.MouseButton1Click:Connect(function() apply(not state, true) end)
-    apply(state, false)
-    el.Set = function(_, v) apply(v, false) end
-    return el
+    btn.MouseButton1Click:Connect(function() el:Set(not el.Value) end)
+    render(start, false)
+    commit(el, data, start, true)
+    return finish(el, data, loaded)
 end
 
+---------------------------------------------------------------- Slider
 function TabFuncs:CreateSlider(data)
     data = data or {}
-    local flag = data.Flag or data.Name
-    local min = data.Range and data.Range[1] or 0
-    local max = data.Range and data.Range[2] or 100
-    local val = data.CurrentValue or Flags[flag] or min
-    local increment = data.Increment or 1
-    local f, el = newElement(self, 52)
+    local range = data.Range or {0, 100}
+    local min, max = range[1], range[2]
+    local inc = data.Increment or 1
+    local suffix = data.Suffix or ""
+    local decimals = #(tostring(inc):match("%.(%d+)") or "")
+    local f, el = newElement(self, 52, "Slider", data)
+    el.Flag = data.Flag
+    local function snap(v)
+        v = math.clamp(v, min, max)
+        v = min + math.floor((v - min) / inc + 0.5) * inc
+        v = math.clamp(v, min, max)
+        return tonumber(string.format("%." .. decimals .. "f", v))
+    end
+    local start, loaded = resolveInitial(data.Flag, data.CurrentValue or min)
+    start = snap(tonumber(start) or min)
     local l = Instance.new("TextLabel")
     l.Size = UDim2.new(0.6, 0, 0, 20)
     l.Position = UDim2.new(0, 12, 0, 5)
@@ -1313,11 +1552,11 @@ function TabFuncs:CreateSlider(data)
     l.TextColor3 = Reaper.Theme.Text
     l.ZIndex = 6
     l.Parent = f
+    el.NameLabel = l
     local valueLabel = Instance.new("TextLabel")
     valueLabel.Size = UDim2.new(0.4, -12, 0, 20)
     valueLabel.Position = UDim2.new(0.6, 0, 0, 5)
     valueLabel.BackgroundTransparency = 1
-    valueLabel.Text = tostring(val)
     valueLabel.Font = Enum.Font.GothamBold
     valueLabel.TextSize = 13
     valueLabel.TextXAlignment = Enum.TextXAlignment.Right
@@ -1342,31 +1581,36 @@ function TabFuncs:CreateSlider(data)
     gradient(barFill, Reaper.Theme.Accent, Reaper.Theme.Accent2, 0)
     local knob = Instance.new("Frame")
     knob.Size = UDim2.new(0, 14, 0, 14)
-    knob.Position = UDim2.new(0, -7, 0.5, -7)
+    knob.Position = UDim2.new(1, -7, 0.5, -7)
     knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     knob.BorderSizePixel = 0
     knob.ZIndex = 7
     knob.Parent = barFill
     round(knob, 7)
-    local function apply(v, fire)
-        val = math.clamp(v, min, max)
-        Flags[flag] = val
-        saveConfig()
-        local alpha = (val - min) / (max - min)
+    local function render(v)
+        local alpha = (max == min) and 0 or (v - min) / (max - min)
         barFill.Size = UDim2.new(alpha, 0, 1, 0)
-        valueLabel.Text = tostring(val) .. (data.Suffix or "")
-        if fire and data.Callback then safeCall(data.Callback, val) end
+        valueLabel.Text = tostring(v) .. suffix
+    end
+    el.Set = function(_, v, silent)
+        v = snap(tonumber(v) or min)
+        render(v)
+        commit(el, data, v, silent)
+    end
+    el.SetRange = function(_, newMin, newMax, newInc)
+        min, max = newMin, newMax
+        if newInc then inc = newInc decimals = #(tostring(inc):match("%.(%d+)") or "") end
+        el:Set(el.Value, true)
     end
     local dragging = false
-    local function updateFromInput(x)
-        local abs = barBack.AbsolutePosition.X
-        local size = barBack.AbsoluteSize.X
-        local alpha = math.clamp((x - abs) / size, 0, 1)
-        local raw = min + (max - min) * alpha
-        apply(min + math.floor((raw - min) / increment + 0.5) * increment, true)
+    local function fromX(x)
+        local alpha = math.clamp((x - barBack.AbsolutePosition.X) / math.max(barBack.AbsoluteSize.X, 1), 0, 1)
+        local v = snap(min + (max - min) * alpha)
+        if v ~= el.Value then el:Set(v) end
     end
     local hit = Instance.new("TextButton")
-    hit.Size = UDim2.new(1, 0, 1, 0)
+    hit.Size = UDim2.new(1, 0, 0, 24)
+    hit.Position = UDim2.new(0, 0, 0.5, -12)
     hit.BackgroundTransparency = 1
     hit.Text = ""
     hit.ZIndex = 8
@@ -1374,150 +1618,258 @@ function TabFuncs:CreateSlider(data)
     hit.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
-            updateFromInput(input.Position.X)
+            fromX(input.Position.X)
         end
     end)
-    UserInputService.InputEnded:Connect(function(input)
+    el:Bind(UserInputService.InputEnded, function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
     end)
-    UserInputService.InputChanged:Connect(function(input)
+    el:Bind(UserInputService.InputChanged, function(input)
         if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            updateFromInput(input.Position.X)
+            fromX(input.Position.X)
         end
     end)
-    apply(val, false)
-    el.Set = function(_, v) apply(v, false) end
-    return el
+    render(start)
+    commit(el, data, start, true)
+    return finish(el, data, loaded)
 end
 
+---------------------------------------------------------------- Dropdown (обычный и с несколькими вариантами)
 function TabFuncs:CreateDropdown(data)
     data = data or {}
-    local flag = data.Flag or data.Name
     local options = data.Options or {}
-    local current = data.CurrentOption or Flags[flag] or options[1]
-    local f, el = newElement(self, 36)
-    local expanded = false
-    local listFrame = Instance.new("Frame")
-    listFrame.Size = UDim2.new(1, 0, 0, 0)
-    listFrame.Position = UDim2.new(0, 0, 1, 4)
-    listFrame.BackgroundColor3 = Reaper.Theme.Element
-    listFrame.BorderSizePixel = 0
-    listFrame.ClipsDescendants = true
-    listFrame.ZIndex = 10
-    listFrame.Visible = false
-    listFrame.Parent = f
-    round(listFrame, 8)
-    local listStroke = stroke(listFrame, Reaper.Theme.Stroke)
-    listStroke.ZIndex = 10
-    local listLayout = Instance.new("UIListLayout")
-    listLayout.Padding = UDim.new(0, 2)
-    listLayout.Parent = listFrame
-    local listPad = Instance.new("UIPadding")
-    listPad.PaddingTop = UDim.new(0, 4)
-    listPad.PaddingBottom = UDim.new(0, 4)
-    listPad.PaddingLeft = UDim.new(0, 4)
-    listPad.PaddingRight = UDim.new(0, 4)
-    listPad.Parent = listFrame
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 1, 0)
-    btn.BackgroundTransparency = 1
-    btn.Font = Enum.Font.GothamSemibold
-    btn.TextSize = 13
-    btn.TextXAlignment = Enum.TextXAlignment.Left
-    btn.TextColor3 = Reaper.Theme.Text
-    btn.ZIndex = 6
-    btn.Parent = f
+    local multi = data.MultipleOptions == true
+    local f, el = newElement(self, 36, "Dropdown", data)
+    el.Flag = data.Flag
+    f.ClipsDescendants = true
+
+    local function clone(t)
+        local o = {}
+        for i, x in ipairs(t) do o[i] = x end
+        return o
+    end
+    local function normalize(v)
+        if multi then
+            local out = {}
+            if type(v) == "table" then
+                for _, x in ipairs(v) do
+                    if table.find(options, x) and not table.find(out, x) then table.insert(out, x) end
+                end
+            elseif v ~= nil and table.find(options, v) then
+                out[1] = v
+            end
+            return out
+        end
+        if type(v) == "table" then v = v[1] end
+        if v ~= nil and table.find(options, v) then return v end
+        return nil
+    end
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(0.5, -12, 0, 36)
+    nameLabel.Position = UDim2.new(0, 12, 0, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = data.Name or "Dropdown"
+    nameLabel.Font = Enum.Font.GothamSemibold
+    nameLabel.TextSize = 13
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.TextColor3 = Reaper.Theme.Text
+    nameLabel.ZIndex = 6
+    nameLabel.Parent = f
+    el.NameLabel = nameLabel
+    local valueLabel = Instance.new("TextLabel")
+    valueLabel.Size = UDim2.new(0.5, -34, 0, 36)
+    valueLabel.Position = UDim2.new(0.5, 0, 0, 0)
+    valueLabel.BackgroundTransparency = 1
+    valueLabel.Font = Enum.Font.Gotham
+    valueLabel.TextSize = 12
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+    valueLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    valueLabel.TextColor3 = Reaper.Theme.TextDark
+    valueLabel.ZIndex = 6
+    valueLabel.Parent = f
     local arrow = Instance.new("TextLabel")
-    arrow.Size = UDim2.new(0, 20, 1, 0)
-    arrow.Position = UDim2.new(1, -24, 0, 0)
+    arrow.Size = UDim2.new(0, 20, 0, 36)
+    arrow.Position = UDim2.new(1, -26, 0, 0)
     arrow.BackgroundTransparency = 1
     arrow.Text = "▼"
     arrow.TextSize = 10
     arrow.TextColor3 = Reaper.Theme.TextDark
     arrow.ZIndex = 6
     arrow.Parent = f
-    local function refresh()
-        btn.Text = "   " .. (data.Name or "Dropdown") .. ":  " .. tostring(current)
-        for _, child in ipairs(listFrame:GetChildren()) do
-            if child:IsA("TextButton") then child:Destroy() end
+    local list = Instance.new("ScrollingFrame")
+    list.Position = UDim2.new(0, 8, 0, 40)
+    list.Size = UDim2.new(1, -16, 0, 0)
+    list.BackgroundTransparency = 1
+    list.BorderSizePixel = 0
+    list.ScrollBarThickness = 2
+    list.CanvasSize = UDim2.new(0, 0, 0, 0)
+    list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    list.ZIndex = 6
+    list.Parent = f
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 2)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = list
+
+    local current
+    local expanded = false
+
+    local function updateDisplay()
+        if multi then
+            local parts = {}
+            for _, x in ipairs(current) do table.insert(parts, tostring(x)) end
+            valueLabel.Text = #parts > 0 and table.concat(parts, ", ") or "—"
+        else
+            valueLabel.Text = current ~= nil and tostring(current) or "—"
         end
-        for _, opt in ipairs(options) do
+    end
+    local function applyExpand()
+        local h = math.min(#options * 28, 140)
+        tween(list, {0.2, Enum.EasingStyle.Quint}, {Size = UDim2.new(1, -16, 0, expanded and h or 0)})
+        tween(f, {0.2, Enum.EasingStyle.Quint}, {Size = UDim2.new(1, -24, 0, 36 + (expanded and h + 8 or 0))})
+        tween(arrow, {0.2}, {Rotation = expanded and 180 or 0})
+    end
+    local function isSelected(opt)
+        if multi then return table.find(current, opt) ~= nil end
+        return current == opt
+    end
+    local function rebuild()
+        for _, c in ipairs(list:GetChildren()) do
+            if c:IsA("TextButton") then c:Destroy() end
+        end
+        for i, opt in ipairs(options) do
+            local sel = isSelected(opt)
             local ob = Instance.new("TextButton")
+            ob.LayoutOrder = i
             ob.Size = UDim2.new(1, 0, 0, 26)
             ob.BackgroundColor3 = Reaper.Theme.Panel
             ob.BorderSizePixel = 0
+            ob.AutoButtonColor = false
             ob.Text = tostring(opt)
-            ob.Font = Enum.Font.Gotham
+            ob.Font = sel and Enum.Font.GothamBold or Enum.Font.Gotham
             ob.TextSize = 12
-            ob.TextColor3 = opt == current and Reaper.Theme.Accent or Reaper.Theme.TextDark
-            ob.ZIndex = 11
-            ob.Parent = listFrame
+            ob.TextColor3 = sel and Reaper.Theme.Accent or Reaper.Theme.TextDark
+            ob.ZIndex = 7
+            ob.Parent = list
             round(ob, 6)
             ob.MouseButton1Click:Connect(function()
-                current = opt
-                Flags[flag] = opt
-                saveConfig()
-                refresh()
-                expanded = false
-                tween(listFrame, {0.2}, {Size = UDim2.new(1, 0, 0, 0)})
-                task.delay(0.2, function() listFrame.Visible = false end)
-                if data.Callback then safeCall(data.Callback, opt) end
+                if multi then
+                    local nv = clone(current)
+                    local idx = table.find(nv, opt)
+                    if idx then table.remove(nv, idx) else table.insert(nv, opt) end
+                    el:Set(nv)
+                else
+                    el:Set(opt)
+                    expanded = false
+                    applyExpand()
+                end
             end)
         end
-        local h = math.min(#options * 28 + 8, 200)
-        if expanded then listFrame.Size = UDim2.new(1, 0, 0, h) end
     end
-    btn.MouseButton1Click:Connect(function()
-        expanded = not expanded
-        if expanded then
-            refresh()
-            listFrame.Visible = true
-            tween(listFrame, {0.2, Enum.EasingStyle.Quint}, {Size = UDim2.new(1, 0, 0, math.min(#options * 28 + 8, 200))})
-            tween(arrow, {0.2}, {Rotation = 180})
+
+    el.Set = function(_, v, silent)
+        local nv = normalize(v)
+        if nv == nil then return end
+        current = nv
+        updateDisplay()
+        rebuild()
+        commit(el, data, multi and clone(current) or current, silent)
+    end
+    el.Get = function()
+        return multi and clone(current) or current
+    end
+    -- Заменить список вариантов. keepSelection = true оставляет выбранное, если оно ещё есть в списке
+    el.Refresh = function(_, newOptions, keepSelection)
+        options = newOptions or {}
+        local nv = keepSelection and normalize(current) or nil
+        if multi then
+            current = nv or {}
         else
-            tween(listFrame, {0.2}, {Size = UDim2.new(1, 0, 0, 0)})
-            tween(arrow, {0.2}, {Rotation = 0})
-            task.delay(0.2, function() if not expanded then listFrame.Visible = false end end)
+            current = nv or options[1]
         end
+        updateDisplay()
+        rebuild()
+        commit(el, data, multi and clone(current) or current, true)
+        if expanded then applyExpand() end
+    end
+
+    local start, loaded = resolveInitial(data.Flag, data.CurrentOption)
+    current = normalize(start)
+    if current == nil then current = multi and {} or options[1] end
+    updateDisplay()
+    rebuild()
+    commit(el, data, multi and clone(current) or current, true)
+
+    local head = Instance.new("TextButton")
+    head.Size = UDim2.new(1, 0, 0, 36)
+    head.BackgroundTransparency = 1
+    head.Text = ""
+    head.ZIndex = 8
+    head.Parent = f
+    head.MouseButton1Click:Connect(function()
+        if #options == 0 then return end
+        expanded = not expanded
+        applyExpand()
     end)
-    refresh()
-    el.Set = function(_, v) current = v Flags[flag] = v refresh() end
-    el.Refresh = function(_, newOptions) options = newOptions refresh() end
-    return el
+    return finish(el, data, loaded)
 end
 
+---------------------------------------------------------------- Input
 function TabFuncs:CreateInput(data)
     data = data or {}
-    local flag = data.Flag or data.Name
-    local f, el = newElement(self, 36)
+    local f, el = newElement(self, 36, "Input", data)
+    el.Flag = data.Flag
+    local start, loaded = resolveInitial(data.Flag, data.CurrentValue or "")
     local box = Instance.new("TextBox")
     box.Size = UDim2.new(1, -16, 1, -8)
     box.Position = UDim2.new(0, 8, 0, 4)
     box.BackgroundTransparency = 1
     box.PlaceholderText = data.Placeholder or data.Name or "Ввод..."
     box.PlaceholderColor3 = Reaper.Theme.TextDark
-    box.Text = data.CurrentValue or ""
+    box.Text = tostring(start)
     box.Font = Enum.Font.Gotham
     box.TextSize = 13
     box.TextXAlignment = Enum.TextXAlignment.Left
     box.TextColor3 = Reaper.Theme.Text
-    box.ClearTextOnFocus = false
+    box.ClearTextOnFocus = data.ClearTextOnFocus == true
     box.ZIndex = 6
     box.Parent = f
+    el.NameLabel = box
+    el.SetName = function(_, txt)
+        el.Name = txt
+        box.PlaceholderText = tostring(txt)
+    end
+    local numbers = data.NumbersOnly == true
+    local function parse(text)
+        if numbers then return tonumber(text) or 0 end
+        return text
+    end
+    if numbers then
+        box:GetPropertyChangedSignal("Text"):Connect(function()
+            local clean = box.Text:gsub("[^%d%.%-]", "")
+            if clean ~= box.Text then box.Text = clean end
+        end)
+    end
+    el.Set = function(_, v, silent)
+        box.Text = tostring(v == nil and "" or v)
+        commit(el, data, parse(box.Text), silent)
+    end
     box.FocusLost:Connect(function()
-        Flags[flag] = box.Text
-        saveConfig()
-        if data.Callback then safeCall(data.Callback, box.Text) end
+        commit(el, data, parse(box.Text), false)
+        if data.RemoveTextAfterFocusLost then box.Text = "" end
     end)
-    el.Set = function(_, v) box.Text = v Flags[flag] = v end
-    return el
+    commit(el, data, parse(box.Text), true)
+    return finish(el, data, loaded)
 end
 
+---------------------------------------------------------------- Keybind
 function TabFuncs:CreateKeybind(data)
     data = data or {}
-    local flag = data.Flag or data.Name
-    local current = data.CurrentKeybind or Flags[flag] or "RightShift"
-    local f, el = newElement(self, 36)
+    local f, el = newElement(self, 36, "Keybind", data)
+    el.Flag = data.Flag
+    local start, loaded = resolveInitial(data.Flag, data.CurrentKeybind or "None")
+    local current = tostring(start)
     local l = Instance.new("TextLabel")
     l.Size = UDim2.new(0.6, 0, 1, 0)
     l.Position = UDim2.new(0, 12, 0, 0)
@@ -1529,11 +1881,12 @@ function TabFuncs:CreateKeybind(data)
     l.TextColor3 = Reaper.Theme.Text
     l.ZIndex = 6
     l.Parent = f
+    el.NameLabel = l
     local kb = Instance.new("TextButton")
     kb.Size = UDim2.new(0, 90, 0, 24)
     kb.Position = UDim2.new(1, -100, 0.5, -12)
     kb.BackgroundColor3 = Reaper.Theme.Panel
-    kb.Text = tostring(current)
+    kb.Text = current
     kb.Font = Enum.Font.GothamBold
     kb.TextSize = 11
     kb.TextColor3 = Reaper.Theme.Accent
@@ -1543,133 +1896,239 @@ function TabFuncs:CreateKeybind(data)
     round(kb, 6)
     stroke(kb, Reaper.Theme.Stroke)
     local listening = false
+    local holding = false
+    -- Set меняет саму клавишу. Callback вызывается при НАЖАТИИ клавиши, а не при смене привязки
+    el.Set = function(_, key, silent)
+        if typeof(key) == "EnumItem" then key = key.Name end
+        current = tostring(key or "None")
+        kb.Text = current
+        kb.TextColor3 = Reaper.Theme.Accent
+        commit(el, {}, current, silent)
+    end
+    el.Press = function()
+        if data.Callback then safeCall(data.Callback, current) end
+    end
     kb.MouseButton1Click:Connect(function()
         listening = true
         kb.Text = "..."
         kb.TextColor3 = Reaper.Theme.Accent2
     end)
-    UserInputService.InputBegan:Connect(function(input, gpe)
+    el:Bind(UserInputService.InputBegan, function(input, gpe)
         if listening then
             if input.UserInputType == Enum.UserInputType.Keyboard then
-                current = input.KeyCode.Name
-                Flags[flag] = current
-                saveConfig()
-                kb.Text = current
-                kb.TextColor3 = Reaper.Theme.Accent
+                listening = false
+                if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
+                    el:Set("None")
+                else
+                    el:Set(input.KeyCode.Name)
+                end
             end
-            listening = false
-        elseif input.KeyCode.Name == current and input.UserInputType == Enum.UserInputType.Keyboard and not gpe then
-            if data.Callback then safeCall(data.Callback, current) end
+        elseif not gpe and current ~= "None" and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode.Name == current then
+            if data.HoldToInteract then
+                holding = true
+                if data.Callback then safeCall(data.Callback, true) end
+            else
+                if data.Callback then safeCall(data.Callback, current) end
+            end
         end
     end)
-    el.Set = function(_, v) current = v kb.Text = tostring(v) end
-    return el
+    el:Bind(UserInputService.InputEnded, function(input)
+        if data.HoldToInteract and holding and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode.Name == current then
+            holding = false
+            if data.Callback then safeCall(data.Callback, false) end
+        end
+    end)
+    commit(el, {}, current, true)
+    return finish(el, {}, false)
 end
 
-function TabFuncs:CreateParagraph(data)
+---------------------------------------------------------------- ColorPicker
+function TabFuncs:CreateColorPicker(data)
     data = data or {}
-    local f, el = newElement(self, 56)
-    local t = Instance.new("TextLabel")
-    t.Size = UDim2.new(1, -24, 0, 20)
-    t.Position = UDim2.new(0, 12, 0, 6)
-    t.BackgroundTransparency = 1
-    t.Text = data.Title or ""
-    t.Font = Enum.Font.GothamBold
-    t.TextSize = 13
-    t.TextXAlignment = Enum.TextXAlignment.Left
-    t.TextColor3 = Reaper.Theme.Accent
-    t.ZIndex = 6
-    t.Parent = f
-    local c = Instance.new("TextLabel")
-    c.Size = UDim2.new(1, -24, 1, -28)
-    c.Position = UDim2.new(0, 12, 0, 26)
-    c.BackgroundTransparency = 1
-    c.Text = data.Content or ""
-    c.Font = Enum.Font.Gotham
-    c.TextSize = 12
-    c.TextWrapped = true
-    c.TextXAlignment = Enum.TextXAlignment.Left
-    c.TextYAlignment = Enum.TextYAlignment.Top
-    c.TextColor3 = Reaper.Theme.TextDark
-    c.ZIndex = 6
-    c.Parent = f
-    el.Set = function(_, title, content) t.Text = title or t.Text c.Text = content or c.Text end
-    return el
-end
+    local f, el = newElement(self, 36, "ColorPicker", data)
+    el.Flag = data.Flag
+    f.ClipsDescendants = true
+    local start, loaded = resolveInitial(data.Flag, data.Color or data.CurrentValue or Color3.new(1, 1, 1))
+    if typeof(start) ~= "Color3" then start = Color3.new(1, 1, 1) end
+    local h, s, v = start:ToHSV()
 
--- Простые структурные элементы, совместимые с привычным Rayfield API.
-function TabFuncs:CreateSection(title)
-    local f, el = newElement(self, 28)
-    f.BackgroundTransparency = 1
-    local line = Instance.new("Frame")
-    line.Size = UDim2.new(1, -24, 0, 1)
-    line.Position = UDim2.new(0, 12, 1, -4)
-    line.BackgroundColor3 = Reaper.Theme.Stroke
-    line.BorderSizePixel = 0
-    line.ZIndex = 6
-    line.Parent = f
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -24, 1, -4)
-    label.Position = UDim2.new(0, 12, 0, 0)
-    label.BackgroundTransparency = 1
-    label.Text = tostring(title or "Section")
-    label.Font = Enum.Font.GothamBold
-    label.TextSize = 11
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.TextColor3 = Reaper.Theme.Accent
-    label.ZIndex = 6
-    label.Parent = f
-    el.Set = function(_, value) label.Text = tostring(value or "") end
-    return el
-end
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, -70, 0, 36)
+    l.Position = UDim2.new(0, 12, 0, 0)
+    l.BackgroundTransparency = 1
+    l.Text = data.Name or "Color"
+    l.Font = Enum.Font.GothamSemibold
+    l.TextSize = 13
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextColor3 = Reaper.Theme.Text
+    l.ZIndex = 6
+    l.Parent = f
+    el.NameLabel = l
+    local swatch = Instance.new("Frame")
+    swatch.Size = UDim2.new(0, 38, 0, 20)
+    swatch.Position = UDim2.new(1, -50, 0, 8)
+    swatch.BackgroundColor3 = start
+    swatch.BorderSizePixel = 0
+    swatch.ZIndex = 6
+    swatch.Parent = f
+    round(swatch, 6)
+    stroke(swatch, Reaper.Theme.Stroke)
 
-function TabFuncs:CreateDivider()
-    local f, el = newElement(self, 10)
-    f.BackgroundTransparency = 1
-    local line = Instance.new("Frame")
-    line.Size = UDim2.new(1, -24, 0, 1)
-    line.Position = UDim2.new(0, 12, 0.5, 0)
-    line.BackgroundColor3 = Reaper.Theme.Stroke
-    line.BorderSizePixel = 0
-    line.ZIndex = 6
-    line.Parent = f
-    return el
-end
-
--- Алиасы названий, которые часто используются в Rayfield-подобных библиотеках.
-TabFuncs.CreateTextBox = TabFuncs.CreateInput
-TabFuncs.CreateInputBox = TabFuncs.CreateInput
-TabFuncs.CreateSelect = TabFuncs.CreateDropdown
-
-function TabFuncs:Select()
-    local target = self._proxyTarget or self
-    selectTab(target)
-    return self
-end
-
-function TabFuncs:SetVisibility(value)
-    local target = self._proxyTarget or self
-    for _, el in ipairs(Elements) do
-        if el.Tab == target then el.Frame.Visible = value ~= false end
+    local bars = {}
+    local active
+    local function refresh()
+        local c = Color3.fromHSV(h, s, v)
+        swatch.BackgroundColor3 = c
+        bars.H.knob.Position = UDim2.new(h, 0, 0.5, 0)
+        bars.S.knob.Position = UDim2.new(s, 0, 0.5, 0)
+        bars.V.knob.Position = UDim2.new(v, 0, 0.5, 0)
+        bars.S.grad.Color = ColorSequence.new(Color3.fromHSV(h, 0, v), Color3.fromHSV(h, 1, v))
+        bars.V.grad.Color = ColorSequence.new(Color3.new(0, 0, 0), Color3.fromHSV(h, s, 1))
+        return c
     end
+    local function fromX(bar, x)
+        local alpha = math.clamp((x - bar.track.AbsolutePosition.X) / math.max(bar.track.AbsoluteSize.X, 1), 0, 1)
+        if bar.key == "H" then h = alpha elseif bar.key == "S" then s = alpha else v = alpha end
+        commit(el, data, refresh(), false)
+    end
+    local function makeBar(key, y)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(0, 14, 0, 20)
+        lbl.Position = UDim2.new(0, 12, 0, y)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = key
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextSize = 11
+        lbl.TextColor3 = Reaper.Theme.TextDark
+        lbl.ZIndex = 6
+        lbl.Parent = f
+        local track = Instance.new("Frame")
+        track.Size = UDim2.new(1, -56, 0, 8)
+        track.Position = UDim2.new(0, 32, 0, y + 6)
+        track.BackgroundColor3 = Color3.new(1, 1, 1)
+        track.BorderSizePixel = 0
+        track.ZIndex = 6
+        track.Parent = f
+        round(track, 4)
+        local g = Instance.new("UIGradient")
+        g.Parent = track
+        local knob = Instance.new("Frame")
+        knob.Size = UDim2.new(0, 12, 0, 12)
+        knob.AnchorPoint = Vector2.new(0.5, 0.5)
+        knob.Position = UDim2.new(0, 0, 0.5, 0)
+        knob.BackgroundColor3 = Color3.new(1, 1, 1)
+        knob.BorderSizePixel = 0
+        knob.ZIndex = 7
+        knob.Parent = track
+        round(knob, 6)
+        stroke(knob, Color3.new(0, 0, 0), 0.3, 1)
+        local hit = Instance.new("TextButton")
+        hit.Size = UDim2.new(1, 0, 0, 22)
+        hit.Position = UDim2.new(0, 0, 0.5, -11)
+        hit.BackgroundTransparency = 1
+        hit.Text = ""
+        hit.ZIndex = 8
+        hit.Parent = track
+        local bar = {key = key, track = track, knob = knob, grad = g}
+        hit.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                active = bar
+                fromX(bar, input.Position.X)
+            end
+        end)
+        bars[key] = bar
+    end
+    makeBar("H", 40)
+    makeBar("S", 64)
+    makeBar("V", 88)
+    local hue = {}
+    for i = 0, 6 do
+        table.insert(hue, ColorSequenceKeypoint.new(i / 6, Color3.fromHSV(math.min(i / 6, 0.999), 1, 1)))
+    end
+    bars.H.grad.Color = ColorSequence.new(hue)
+
+    el:Bind(UserInputService.InputChanged, function(input)
+        if active and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            fromX(active, input.Position.X)
+        end
+    end)
+    el:Bind(UserInputService.InputEnded, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then active = nil end
+    end)
+
+    el.Set = function(_, c, silent)
+        if typeof(c) ~= "Color3" then return end
+        h, s, v = c:ToHSV()
+        commit(el, data, refresh(), silent)
+    end
+
+    local expanded = false
+    local head = Instance.new("TextButton")
+    head.Size = UDim2.new(1, 0, 0, 36)
+    head.BackgroundTransparency = 1
+    head.Text = ""
+    head.ZIndex = 8
+    head.Parent = f
+    head.MouseButton1Click:Connect(function()
+        expanded = not expanded
+        tween(f, {0.25, Enum.EasingStyle.Quint}, {Size = UDim2.new(1, -24, 0, expanded and 118 or 36)})
+    end)
+
+    commit(el, data, refresh(), true)
+    return finish(el, data, loaded)
+end
+
+-- Свои методы для вкладки
+function TabFuncs:Select()
+    selectTab(self)
     return self
 end
 
+function TabFuncs:Clear()
+    for _, el in ipairs({table.unpack(self.Elements or {})}) do el:Destroy() end
+    self.Elements = {}
+end
+
+--=====================================================================
+--  ОКНО
+--=====================================================================
 local WindowFuncs = {}
 Reaper.TabList = {}
 
-function WindowFuncs:CreateTab(data)
-    data = typeof(data) == "string" and {Name = data} or data or {}
-    local tab = {
-        Name = data.Name or "Tab",
-        Icon = data.Icon or "◆"
-    }
+local function dummyElement()
+    return setmetatable({}, {__index = function() return function() end end})
+end
+
+local function popInTab(tab)
+    local b = tab.Button
+    b.Position = CENTER_BTN
+    b.Size = UDim2.new(0, 14, 0, 14)
+    b.BackgroundTransparency = 1
+    b.Visible = true
+    tween(b, {0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out}, {Position = tab.TargetPos, Size = UDim2.new(0, 54, 0, 54)})
+    if tab.IconObj then
+        if tab.IconObj:IsA("ImageLabel") then
+            tab.IconObj.ImageTransparency = 1
+            tween(tab.IconObj, {0.4}, {ImageTransparency = 0})
+        else
+            tab.IconObj.TextTransparency = 1
+            tween(tab.IconObj, {0.4}, {TextTransparency = 0})
+        end
+    end
+end
+
+-- Window:CreateTab({Name = "Main", Icon = "home"})  или  Window:CreateTab("Main", "home")
+function WindowFuncs:CreateTab(data, icon)
+    if type(data) == "string" then data = {Name = data, Icon = icon} end
+    data = data or {}
+    local name = data.Name or "Tab"
     if #Tabs >= Reaper.MaxTabs then
-        warn("[Reaper] Максимум вкладок: " .. Reaper.MaxTabs .. ". Вкладка «" .. tab.Name .. "» не добавлена")
+        warn("[Reaper] Максимум вкладок: " .. Reaper.MaxTabs .. ". Вкладка «" .. name .. "» не добавлена")
         return setmetatable({}, {__index = function()
-            return function() return {Set = function() end} end
+            return function() return dummyElement() end
         end})
     end
+    local tab = setmetatable({Name = name, Icon = data.Icon or "◆", Elements = {}}, {__index = TabFuncs})
     table.insert(Tabs, tab)
     tab.OrigIndex = #Tabs
     createTabButton(tab, #Tabs, math.max(#Tabs, 3))
@@ -1677,30 +2136,33 @@ function WindowFuncs:CreateTab(data)
         local angle = -90 + (i - 1) * (360 / #Tabs)
         local rad = math.rad(angle)
         t.TargetPos = UDim2.new(0.5, math.cos(rad) * 96, 0.5, math.sin(rad) * 96)
-        if Opened then tween(t.Button, {0.4, Enum.EasingStyle.Quint}, {Position = t.TargetPos}) end
+        if Opened and t ~= tab then tween(t.Button, {0.4, Enum.EasingStyle.Quint}, {Position = t.TargetPos}) end
     end
     rebuildDividers()
-    tab._proxyTarget = tab
-    local proxy = setmetatable({}, {
-        __index = function(_, key) return TabFuncs[key] or tab[key] end,
-        __newindex = function(_, key, value) tab[key] = value end
-    })
-    proxy.Name = tab.Name
-    Reaper.TabList[tab.Name] = proxy
-    if string.lower(tab.Name) == "settings" then
-        proxy:CreateSection("System appearance")
-        proxy:CreateDropdown({
-            Name = "System Theme",
-            Flag = "SystemTheme",
-            Options = {"White", "Black", "Green"},
-            CurrentOption = Flags.SystemTheme or "Black",
-            Callback = function(value)
-                if Reaper.Window then Reaper.Window:ApplyTheme(value) end
-            end
-        })
-    end
-    return proxy
+    if Opened then popInTab(tab) end
+    Reaper.TabList[name] = tab
+    return tab
 end
+
+function WindowFuncs:SelectTab(tab)
+    if type(tab) == "string" then tab = Reaper.TabList[tab] end
+    if tab and table.find(Tabs, tab) then selectTab(tab) end
+end
+
+function WindowFuncs:Notify(data) Reaper:Notify(data) end
+function WindowFuncs:SetTitle(text) CenterTitle.Text = tostring(text) end
+function WindowFuncs:SetIcon(text) MainButton.Text = tostring(text) end
+function WindowFuncs:Show() ScreenGui.Enabled = true end
+function WindowFuncs:Hide() ScreenGui.Enabled = false end
+function WindowFuncs:Toggle() ScreenGui.Enabled = not ScreenGui.Enabled end
+function WindowFuncs:Open() if not Opened then openMenu() end end
+function WindowFuncs:Close() if Opened then closeMenu() end end
+function WindowFuncs:SetToggleKey(key) Reaper.ToggleKey = resolveKey(key) or Reaper.ToggleKey end
+function WindowFuncs:SaveConfig(name) return Reaper:SaveConfig(name) end
+function WindowFuncs:LoadConfig(name) return Reaper:LoadConfig(name) end
+function WindowFuncs:ListConfigs() return Reaper:ListConfigs() end
+function WindowFuncs:DeleteConfig(name) return Reaper:DeleteConfig(name) end
+function WindowFuncs:Destroy() Reaper:Destroy() end
 
 function WindowFuncs:SetAccent(c1, c2)
     Reaper.Theme.Accent = c1 or Reaper.Theme.Accent
@@ -1712,237 +2174,90 @@ function WindowFuncs:SetAccent(c1, c2)
     end
 end
 
-function WindowFuncs:SetTheme(theme)
-    theme = theme or {}
-    local previous = {}
-    for key, value in pairs(Reaper.Theme) do previous[key] = value end
-    for key, value in pairs(theme) do
-        if Reaper.Theme[key] ~= nil and typeof(value) == "Color3" then
-            Reaper.Theme[key] = value
-        end
-    end
-    for _, obj in ipairs(ScreenGui:GetDescendants()) do
-        if obj:IsA("GuiObject") then
-            if obj.BackgroundColor3 == previous.Background then obj.BackgroundColor3 = Reaper.Theme.Background end
-            if obj.BackgroundColor3 == previous.Panel then obj.BackgroundColor3 = Reaper.Theme.Panel end
-            if obj.BackgroundColor3 == previous.Element then obj.BackgroundColor3 = Reaper.Theme.Element end
-            if obj.BackgroundColor3 == previous.Stroke then obj.BackgroundColor3 = Reaper.Theme.Stroke end
-        end
-        if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
-            if obj.TextColor3 == previous.Text then obj.TextColor3 = Reaper.Theme.Text end
-            if obj.TextColor3 == previous.TextDark then obj.TextColor3 = Reaper.Theme.TextDark end
-            if obj.TextColor3 == previous.Accent then obj.TextColor3 = Reaper.Theme.Accent end
-            if obj.TextColor3 == previous.Accent2 then obj.TextColor3 = Reaper.Theme.Accent2 end
-        elseif obj:IsA("UIStroke") then
-            if obj.Color == previous.Stroke then obj.Color = Reaper.Theme.Stroke end
-            if obj.Color == previous.Accent then obj.Color = Reaper.Theme.Accent end
-            if obj.Color == previous.Accent2 then obj.Color = Reaper.Theme.Accent2 end
-        elseif obj:IsA("UIGradient") then
-            obj.Color = ColorSequence.new{
-                ColorSequenceKeypoint.new(0, Reaper.Theme.Accent),
-                ColorSequenceKeypoint.new(1, Reaper.Theme.Accent2)
-            }
-        end
-    end
-    self:SetAccent(Reaper.Theme.Accent, Reaper.Theme.Accent2)
-    return self
+function Reaper:GetFlag(flag)
+    return Reaper.Flags[flag]
 end
 
-function WindowFuncs:ApplyTheme(name, save)
-    name = tostring(name or "Black")
-    local key = name:sub(1, 1):upper() .. name:sub(2):lower()
-    local theme = Reaper.Themes[key]
-    if not theme then
-        warn("[Reaper] Unknown theme: " .. tostring(name) .. ". Use White, Black or Green.")
-        return false
-    end
-    self:SetTheme(theme)
-    Flags.SystemTheme = key
-    if save ~= false then saveConfig(nil, false) end
-    return true
-end
-
-function WindowFuncs:Notify(data)
-    Reaper:Notify(data)
-    return self
-end
-
-function WindowFuncs:Toggle(value)
-    if value == nil then value = not ScreenGui.Enabled end
-    ScreenGui.Enabled = value ~= false
-    return self
-end
-
-function WindowFuncs:SetVisibility(value)
-    ScreenGui.Enabled = value ~= false
-    return self
-end
-
-function WindowFuncs:Open()
-    ScreenGui.Enabled = true
-    if not Opened then openMenu() end
-    return self
-end
-
-function WindowFuncs:Close()
-    if Opened then closeMenu() end
-    return self
-end
-
-function WindowFuncs:Minimize()
-    setMinimized(true)
-    return self
-end
-
-function WindowFuncs:Restore()
-    setMinimized(false)
-    return self
-end
-
-function WindowFuncs:SelectTab(nameOrTab)
-    local tab = nameOrTab
-    if type(nameOrTab) == "string" then tab = self:GetTab(nameOrTab) end
-    if tab and tab._proxyTarget then tab = tab._proxyTarget end
-    if tab then selectTab(tab) end
-    return tab
-end
-
-function WindowFuncs:GetTab(name)
-    return Reaper.TabList[name]
-end
-
-function WindowFuncs:GetFlag(name, default)
-    local value = Flags[name]
-    if value == nil then return default end
-    return value
-end
-
-function WindowFuncs:SetFlag(name, value)
-    Flags[name] = value
-    return self
-end
-
-function WindowFuncs:SaveConfiguration()
-    return saveConfig(nil, true)
-end
-
-function WindowFuncs:SaveConfig(name)
-    return saveConfig(name, true)
-end
-
-function WindowFuncs:LoadConfiguration(name)
-    return loadConfig(name, true)
-end
-
-function WindowFuncs:LoadConfig(name)
-    return loadConfig(name, true)
-end
-
-function WindowFuncs:SetConfig(name, loadNow)
-    Reaper.Config.File = cleanConfigName(name)
-    if loadNow ~= false then loadConfig(Reaper.Config.File, true) end
-    return self
-end
-
-function WindowFuncs:GetConfigPath(name)
-    return configPath(name)
-end
-
-function WindowFuncs:ListConfigs()
-    return listConfigs()
-end
-
-function WindowFuncs:Destroy()
-    if ScreenGui then ScreenGui:Destroy() end
-    Elements = {}
-    Tabs = {}
-    Reaper.TabList = {}
-    ActiveTab = nil
-    Opened = false
-end
-
-function Reaper:CreateWindow(data)
-    data = data or {}
-    if data.Config then self:Configure(data.Config) end
-    if self.Config.AutoLoad then loadConfig(self.Config.File, true) end
-    CenterTitle.Text = data.Name or "REAPER"
-    MainButton.Text = data.Icon or "☠"
-    if data.LoadingTitle then
-        Reaper:Notify({Title = data.LoadingTitle, Content = data.LoadingSubtitle or "", Duration = 3})
-    end
-    local proxy = setmetatable({}, {__index = WindowFuncs})
-    Reaper.Window = proxy
-    if Flags.SystemTheme then proxy:ApplyTheme(Flags.SystemTheme, false) end
-    return proxy
-end
-
--- Глобальные удобные методы: ими можно пользоваться и до создания Window.
-function Reaper:GetFlag(name, default)
-    local value = Flags[name]
-    return value == nil and default or value
-end
-
-function Reaper:SetFlag(name, value)
-    Flags[name] = value
-    saveConfig(nil, false)
-    return value
-end
-
-function Reaper:Configure(options)
-    options = options or {}
-    for key, value in pairs(options) do
-        if key == "Folder" or key == "File" or key == "LegacyFile" then
-            Reaper.Config[key] = tostring(value)
-        elseif key == "AutoSave" or key == "AutoLoad" then
-            Reaper.Config[key] = value ~= false
-        end
-    end
-    Reaper.Config.File = cleanConfigName(Reaper.Config.File)
-    return self
-end
-
-function Reaper:SetConfig(name, loadNow)
-    Reaper.Config.File = cleanConfigName(name)
-    if loadNow ~= false then loadConfig(Reaper.Config.File, true) end
-    return self
-end
-
-function Reaper:GetConfigPath(name)
-    return configPath(name)
-end
-
-function Reaper:ListConfigs()
-    return listConfigs()
-end
-
-function Reaper:SaveConfiguration(name)
-    return saveConfig(name, true)
-end
-
-function Reaper:LoadConfiguration(name)
-    return loadConfig(name, true)
-end
-
-function Reaper:CreateConfigSystem(options)
-    self:Configure(options)
-    local api = {}
-    function api:Save(name) return Reaper:SaveConfiguration(name) end
-    function api:Load(name) return Reaper:LoadConfiguration(name) end
-    function api:Set(name, loadNow) return Reaper:SetConfig(name, loadNow) end
-    function api:GetPath(name) return Reaper:GetConfigPath(name) end
-    function api:List() return Reaper:ListConfigs() end
-    function api:GetName() return Reaper.Config.File end
-    function api:GetFolder() return Reaper.Config.Folder end
-    function api:Configure(config) Reaper:Configure(config); return self end
-    return api
+function Reaper:SetFlag(flag, value, silent)
+    local el = Reaper.Options[flag]
+    if el then el:Set(value, silent) return true end
+    return false
 end
 
 function Reaper:Destroy()
-    if self.Window then self.Window:Destroy() elseif ScreenGui then ScreenGui:Destroy() end
+    if Reaper.Destroyed then return end
+    Reaper.Destroyed = true
+    if Reaper.Config.Enabled then Reaper:SaveConfig() end
+    for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
+    for _, el in ipairs(Elements) do
+        for _, c in ipairs(el.Conns) do pcall(function() c:Disconnect() end) end
+    end
+    pcall(function() ScreenGui:Destroy() end)
+    Reaper.Window = nil
 end
 
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if not gpe and input.KeyCode == Enum.KeyCode.RightShift then
+function Reaper:AddIcon(name, assetId)
+    if type(assetId) == "number" then assetId = "rbxassetid://" .. assetId end
+    Reaper.Icons[name] = assetId
+end
+
+--[[
+    Reaper:CreateWindow({
+        Name = "REAPER",                        -- заголовок в центре кольца
+        Icon = "☠",                             -- символ на круглой кнопке
+        ToggleKey = Enum.KeyCode.RightShift,    -- показать/скрыть весь интерфейс
+        AutoOpen = true,                        -- открыть меню сразу
+        Accent = {Color3, Color3},              -- цвета градиента (необязательно)
+        LoadingTitle = "...", LoadingSubtitle = "...",  -- стартовое уведомление
+        ConfigurationSaving = {Enabled = true, FolderName = "Reaper", FileName = "MyScript"},
+    })
+]]
+function Reaper:CreateWindow(data)
+    if Reaper.Destroyed then
+        warn("[Reaper] Библиотека выгружена (Destroy). Загрузи её заново.")
+        return nil
+    end
+    if Reaper.Window then
+        warn("[Reaper] Окно уже создано, возвращаю существующее")
+        return Reaper.Window
+    end
+    data = data or {}
+
+    local cs = data.ConfigurationSaving
+    if cs and cs.Enabled ~= false then
+        Reaper.Config.Enabled = true
+        Reaper.Config.Folder = cs.FolderName or Reaper.Config.Folder
+        Reaper.Config.File = cs.FileName or Reaper.Config.File
+        local saved = readConfigFile()
+        if saved then
+            for k, v in pairs(saved) do Loaded[k] = v end
+        end
+    end
+
+    CenterTitle.Text = tostring(data.Name or "REAPER")
+    MainButton.Text = tostring(data.Icon or "☠")
+    Reaper.ToggleKey = resolveKey(data.ToggleKey) or Enum.KeyCode.RightShift
+    ScreenGui.Enabled = true
+
+    local Window = setmetatable({}, {__index = WindowFuncs})
+    Reaper.Window = Window
+    if data.Accent then Window:SetAccent(data.Accent[1], data.Accent[2]) end
+    if data.LoadingTitle then
+        Reaper:Notify({Title = data.LoadingTitle, Content = data.LoadingSubtitle or "", Duration = 3})
+    end
+    if data.AutoOpen ~= false then
+        -- откладываем, чтобы все вкладки из основного скрипта успели создаться
+        task.defer(function()
+            if Reaper.Destroyed then return end
+            if Tabs[1] and not ActiveTab then selectTab(Tabs[1]) end
+            if not Opened then openMenu() end
+        end)
+    end
+    return Window
+end
+
+bind(UserInputService.InputBegan, function(input, gpe)
+    if not gpe and Reaper.Window and Reaper.ToggleKey and input.KeyCode == Reaper.ToggleKey then
         ScreenGui.Enabled = not ScreenGui.Enabled
     end
 end)
